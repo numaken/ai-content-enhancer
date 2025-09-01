@@ -1,0 +1,242 @@
+.ace-controls {
+    margin: 10px 0;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.ace-enhance-btn,
+.ace-backups-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.ace-enhance-btn .dashicons,
+.ace-backups-btn .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+.ace-spinning {
+    animation: ace-spin 1s linear infinite;
+}
+
+@keyframes ace-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Modal Styles */
+.ace-modal {
+    position: fixed;
+    z-index: 100000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+}
+
+.ace-modal-content {
+    position: relative;
+    background-color: #fff;
+    margin: 5% auto;
+    padding: 0;
+    width: 90%;
+    max-width: 800px;
+    max-height: 80vh;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    overflow: hidden;
+}
+
+.ace-modal-header {
+    padding: 20px 24px;
+    background: #f1f1f1;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.ace-modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.ace-modal-close {
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+    color: #666;
+    transition: color 0.2s;
+}
+
+.ace-modal-close:hover {
+    color: #000;
+}
+
+.ace-modal-body {
+    padding: 24px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+/* Backups List Styles */
+.ace-backups-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.ace-backup-item {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 16px;
+    background: #fafafa;
+    transition: background-color 0.2s;
+}
+
+.ace-backup-item:hover {
+    background: #f0f0f0;
+}
+
+.ace-backup-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.ace-backup-header strong {
+    font-size: 14px;
+    color: #23282d;
+}
+
+.ace-backup-date {
+    font-size: 12px;
+    color: #666;
+}
+
+.ace-backup-preview {
+    font-size: 13px;
+    line-height: 1.5;
+    color: #555;
+    margin-bottom: 12px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.ace-backup-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.ace-restore-btn {
+    background: #0073aa !important;
+    color: white !important;
+    border-color: #0073aa !important;
+    transition: background-color 0.2s;
+}
+
+.ace-restore-btn:hover {
+    background: #005a87 !important;
+    border-color: #005a87 !important;
+}
+
+.ace-restore-btn:disabled {
+    background: #ccc !important;
+    border-color: #ccc !important;
+    cursor: not-allowed;
+}
+
+/* Notice Styles */
+.ace-notice {
+    margin: 15px 0;
+    animation: ace-slide-in 0.3s ease-out;
+}
+
+@keyframes ace-slide-in {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .ace-controls {
+        flex-direction: column;
+    }
+    
+    .ace-enhance-btn,
+    .ace-backups-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    
+    .ace-modal-content {
+        margin: 10% 5%;
+        width: 90%;
+    }
+    
+    .ace-backup-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+    }
+    
+    .ace-backup-actions {
+        justify-content: flex-start;
+    }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .ace-modal-content {
+        background-color: #1e1e1e;
+        color: #fff;
+    }
+    
+    .ace-modal-header {
+        background: #2c2c2c;
+        border-bottom-color: #555;
+    }
+    
+    .ace-backup-item {
+        background: #2c2c2c;
+        border-color: #555;
+    }
+    
+    .ace-backup-item:hover {
+        background: #383838;
+    }
+    
+    .ace-backup-preview {
+        background: #1e1e1e;
+        border-color: #555;
+        color: #ddd;
+    }
+    
+    .ace-modal-close {
+        color: #ccc;
+    }
+    
+    .ace-modal-close:hover {
+        color: #fff;
+    }
+}
