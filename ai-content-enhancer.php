@@ -1,304 +1,269 @@
 <?php
 /**
  * Plugin Name: AI Content Enhancer
- * Description: AI-powered content enhancement tool for WordPress posts with backup/restore functionality
+ * Description: AI で本文を加筆し、バックアップ/復元もできる編集支援プラグイン（Classic/Gutenberg対応）
  * Version: 1.0.0
- * Author: Your Name
+ * Author: Panolabo
  * Text Domain: ai-content-enhancer
- * Requires at least: 5.0
- * Tested up to: 6.4
+ * Requires at least: 6.0
+ * Tested up to: 6.6
  * Requires PHP: 7.4
  */
 
-if (!defined('ABSPATH')) {
-    exit;
-}
+if (!defined('ABSPATH')) exit;
 
 define('ACE_VERSION', '1.0.0');
+define('ACE_PLUGIN_FILE', __FILE__);
+define('ACE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ACE_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('ACE_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
-class AIContentEnhancer
-{
-    private static $instance = null;
+class AI_Content_Enhancer {
+    const OPTION_API_KEY         = 'ace_openai_api_key';
+    const OPTION_MODEL           = 'ace_openai_model';
+    const OPTION_SYSTEM_PROMPT   = 'ace_system_prompt';
+    const OPTION_USER_TEMPLATE   = 'ace_user_prompt_template';
+    const OPTION_MAX_BACKUPS     = 'ace_max_backups';
+    const META_BACKUPS           = '_ace_backups'; // array: [ [ts=>int, content=>string], ... ]
+    const NONCE_ACTION           = 'ace_nonce';
+    const CAPABILITY             = 'edit_posts';
 
-    public static function getInstance()
-    {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
+    public function __construct() {
+        add_action('admin_menu',           [$this, 'add_settings_page']);
+        add_action('admin_enqueue_scripts',[$this, 'enqueue_admin_assets']);
+        add_action('enqueue_block_editor_assets', [$this, 'enqueue_admin_assets']); // Gutenberg
+
+        add_action('add_meta_boxes',       [$this, 'add_metabox']); // Classic/Gutenberg両方で表示される
+        add_action('save_post',            [$this, 'maybe_auto_enhance_on_first_save'], 20, 2);
+
+        // AJAX: 加筆/バックアップ一覧/復元
+        add_action('wp_ajax_ace_enhance_content',  [$this, 'ajax_enhance_content']);
+        add_action('wp_ajax_ace_list_backups',     [$this, 'ajax_list_backups']);
+        add_action('wp_ajax_ace_restore_backup',   [$this, 'ajax_restore_backup']);
     }
 
-    private function __construct()
-    {
-        add_action('init', array($this, 'init'));
-        register_activation_hook(__FILE__, array($this, 'activate'));
-        register_deactivation_hook(__FILE__, array($this, 'deactivate'));
-    }
-
-    public function init()
-    {
-        load_plugin_textdomain('ai-content-enhancer', false, dirname(plugin_basename(__FILE__)) . '/languages');
-        
-        if (is_admin()) {
-            add_action('admin_enqueue_scripts', array($this, 'adminEnqueueScripts'));
-            add_action('admin_menu', array($this, 'addAdminMenu'));
-            add_action('wp_ajax_ace_enhance_content', array($this, 'handleEnhanceContent'));
-            add_action('wp_ajax_ace_restore_content', array($this, 'handleRestoreContent'));
-            add_action('wp_ajax_ace_get_backups', array($this, 'handleGetBackups'));
-        }
-    }
-
-    public function adminEnqueueScripts($hook)
-    {
-        if ($hook !== 'post.php' && $hook !== 'post-new.php') {
-            return;
-        }
-
-        wp_enqueue_script(
-            'ace-enhancer',
-            ACE_PLUGIN_URL . 'assets/js/enhancer.js',
-            array('jquery'),
-            ACE_VERSION,
-            true
-        );
-
-        wp_enqueue_style(
-            'ace-enhancer',
-            ACE_PLUGIN_URL . 'assets/css/enhancer.css',
-            array(),
-            ACE_VERSION
-        );
-
-        wp_localize_script('ace-enhancer', 'aceAjax', array(
-            'ajaxUrl' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('ace_nonce'),
-            'strings' => array(
-                'enhanceButton' => __('🧠 AI Enhance', 'ai-content-enhancer'),
-                'enhancing' => __('AI Enhancing...', 'ai-content-enhancer'),
-                'backupButton' => __('📝 Backups', 'ai-content-enhancer'),
-                'restoreButton' => __('↩️ Restore', 'ai-content-enhancer'),
-                'confirmEnhance' => __('This will backup your current content and enhance it with AI. Continue?', 'ai-content-enhancer'),
-                'confirmRestore' => __('Are you sure you want to restore this backup?', 'ai-content-enhancer'),
-                'success' => __('Content enhanced successfully!', 'ai-content-enhancer'),
-                'error' => __('Enhancement failed. Please try again.', 'ai-content-enhancer'),
-                'noApiKey' => __('OpenAI API key not configured. Please check settings.', 'ai-content-enhancer'),
-                'noContent' => __('No content to enhance.', 'ai-content-enhancer')
-            )
-        ));
-    }
-
-    public function addAdminMenu()
-    {
+    /* ========== 設定画面 ========== */
+    public function add_settings_page() {
         add_options_page(
-            __('AI Content Enhancer Settings', 'ai-content-enhancer'),
-            __('AI Enhancer', 'ai-content-enhancer'),
+            __('AI Content Enhancer', 'ai-content-enhancer'),
+            __('AI Content Enhancer', 'ai-content-enhancer'),
             'manage_options',
             'ai-content-enhancer',
-            array($this, 'settingsPage')
+            [$this, 'render_settings_page']
         );
     }
 
-    public function settingsPage()
-    {
-        if (isset($_POST['submit'])) {
+    public function render_settings_page() {
+        if (!current_user_can('manage_options')) wp_die(__('You do not have permission.', 'ai-content-enhancer'));
+
+        if (isset($_POST['ace_settings_submitted'])) {
             check_admin_referer('ace_settings');
-            
-            update_option('ace_openai_api_key', sanitize_text_field($_POST['ace_openai_api_key']));
-            update_option('ace_openai_model', sanitize_text_field($_POST['ace_openai_model']));
-            update_option('ace_system_prompt', wp_kses_post($_POST['ace_system_prompt']));
-            update_option('ace_user_prompt_template', wp_kses_post($_POST['ace_user_prompt_template']));
-            update_option('ace_max_backups', intval($_POST['ace_max_backups']));
-            
-            echo '<div class="notice notice-success"><p>' . __('Settings saved!', 'ai-content-enhancer') . '</p></div>';
+
+            update_option(self::OPTION_API_KEY,         sanitize_text_field($_POST[self::OPTION_API_KEY] ?? ''));
+            update_option(self::OPTION_MODEL,           sanitize_text_field($_POST[self::OPTION_MODEL]   ?? 'gpt-4o-mini'));
+            update_option(self::OPTION_SYSTEM_PROMPT,   wp_kses_post($_POST[self::OPTION_SYSTEM_PROMPT]  ?? $this->default_system_prompt()));
+            update_option(self::OPTION_USER_TEMPLATE,   wp_kses_post($_POST[self::OPTION_USER_TEMPLATE]  ?? $this->default_user_template()));
+            update_option(self::OPTION_MAX_BACKUPS,     max(1, intval($_POST[self::OPTION_MAX_BACKUPS]   ?? 5)));
+
+            echo '<div class="notice notice-success is-dismissible"><p>'.esc_html__('Settings saved.', 'ai-content-enhancer').'</p></div>';
         }
 
-        $api_key = get_option('ace_openai_api_key', '');
-        $model = get_option('ace_openai_model', 'gpt-3.5-turbo');
-        $system_prompt = get_option('ace_system_prompt', 'You are a professional content writer and editor. Help enhance the following content while maintaining its original meaning and style.');
-        $user_prompt_template = get_option('ace_user_prompt_template', 'Please enhance this content to make it more engaging, informative, and well-structured:\n\n{content}');
-        $max_backups = get_option('ace_max_backups', 5);
+        $api_key         = get_option(self::OPTION_API_KEY, '');
+        $model           = get_option(self::OPTION_MODEL, 'gpt-4o-mini');
+        $system_prompt   = get_option(self::OPTION_SYSTEM_PROMPT, $this->default_system_prompt());
+        $user_template   = get_option(self::OPTION_USER_TEMPLATE, $this->default_user_template());
+        $max_backups     = get_option(self::OPTION_MAX_BACKUPS, 5);
 
-        include ACE_PLUGIN_PATH . 'includes/settings-page.php';
+        include ACE_PLUGIN_DIR.'includes/settings-page.php';
     }
 
-    public function handleEnhanceContent()
-    {
-        check_ajax_referer('ace_nonce', 'nonce');
-
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $content = wp_unslash($_POST['content'] ?? '');
-        $post_id = intval($_POST['post_id'] ?? 0);
-
-        if (empty($content)) {
-            wp_send_json_error(__('No content provided', 'ai-content-enhancer'));
-        }
-
-        if ($post_id > 0) {
-            $this->createBackup($post_id, $content);
-        }
-
-        $enhanced_content = $this->callOpenAI($content);
-        
-        if (empty($enhanced_content)) {
-            wp_send_json_error(__('AI enhancement failed', 'ai-content-enhancer'));
-        }
-
-        wp_send_json_success($enhanced_content);
+    private function default_system_prompt(): string {
+        return "あなたはプロの編集者です。事実を歪めず、冗長さを抑えつつ、見出し・小見出し・箇条書き等を適切に用い、読みやすく構成します。専門用語は分かりやすく補足し、日本語の自然さと簡潔さを両立してください。";
     }
 
-    public function handleRestoreContent()
-    {
-        check_ajax_referer('ace_nonce', 'nonce');
-
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $backup_id = intval($_POST['backup_id'] ?? 0);
-        $post_id = intval($_POST['post_id'] ?? 0);
-
-        $backup = $this->getBackup($post_id, $backup_id);
-        
-        if (!$backup) {
-            wp_send_json_error(__('Backup not found', 'ai-content-enhancer'));
-        }
-
-        wp_send_json_success($backup['content']);
+    private function default_user_template(): string {
+        return "次の本文を、意味を変えずに構成/表現を磨いてください。重要点は見出し化し、段落を整理し、必要に応じて箇条書きで簡潔に：\n\n{content}";
     }
 
-    public function handleGetBackups()
-    {
-        check_ajax_referer('ace_nonce', 'nonce');
-
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $post_id = intval($_POST['post_id'] ?? 0);
-        $backups = $this->getBackups($post_id);
-
-        wp_send_json_success($backups);
-    }
-
-    private function createBackup($post_id, $content)
-    {
-        $backups = get_post_meta($post_id, '_ace_content_backups', true);
-        if (!is_array($backups)) {
-            $backups = array();
-        }
-
-        $backup = array(
-            'id' => time(),
-            'content' => $content,
-            'created_at' => current_time('mysql'),
-            'user_id' => get_current_user_id()
+    /* ========== メタボックス（UI） ========== */
+    public function add_metabox() {
+        add_meta_box(
+            'ace-metabox',
+            '🧠 AI Content Enhancer',
+            function($post) {
+                echo '<p>'.esc_html__('「AI加筆」で本文を整え、変更前は自動バックアップします。', 'ai-content-enhancer').'</p>';
+                echo '<button type="button" class="button button-primary" id="ace-enhance-btn">🧠 AI加筆</button> ';
+                echo '<button type="button" class="button" id="ace-backups-btn">📝 バックアップ</button>';
+                wp_nonce_field(self::NONCE_ACTION, 'ace_nonce_field');
+            },
+            null, 'side', 'high'
         );
-
-        array_unshift($backups, $backup);
-
-        $max_backups = get_option('ace_max_backups', 5);
-        if (count($backups) > $max_backups) {
-            $backups = array_slice($backups, 0, $max_backups);
-        }
-
-        update_post_meta($post_id, '_ace_content_backups', $backups);
     }
 
-    private function getBackups($post_id)
-    {
-        $backups = get_post_meta($post_id, '_ace_content_backups', true);
-        return is_array($backups) ? $backups : array();
+    /* ========== アセット読み込み ========== */
+    public function enqueue_admin_assets($hook='') {
+        // 投稿編集画面 or 設定ページのみ
+        $screen = get_current_screen();
+        $is_editor = isset($screen->base) && in_array($screen->base, ['post','post-new','edit'], true);
+        $is_settings = ($hook === 'settings_page_ai-content-enhancer');
+
+        if (!$is_editor && !$is_settings) return;
+
+        wp_enqueue_style('ace-enhancer', ACE_PLUGIN_URL.'assets/css/enhancer.css', [], ACE_VERSION);
+        wp_enqueue_script('ace-enhancer', ACE_PLUGIN_URL.'assets/js/enhancer.js', ['jquery'], ACE_VERSION, true);
+
+        wp_localize_script('ace-enhancer', 'aceAjax', [
+            'ajaxUrl'   => admin_url('admin-ajax.php'),
+            'nonce'     => wp_create_nonce(self::NONCE_ACTION),
+            'strings'   => [
+                'enhanceButton' => '🧠 AI加筆',
+                'enhancing'     => 'AI 加筆中...',
+                'backups'       => 'バックアップ',
+                'restore'       => '復元',
+                'close'         => '閉じる',
+                'noBackups'     => 'バックアップはありません',
+                'error'         => 'エラーが発生しました',
+                'confirmRestore'=> 'このバックアップで本文を置き換えます。よろしいですか？'
+            ]
+        ]);
     }
 
-    private function getBackup($post_id, $backup_id)
-    {
-        $backups = $this->getBackups($post_id);
-        
-        foreach ($backups as $backup) {
-            if ($backup['id'] == $backup_id) {
-                return $backup;
-            }
-        }
-        
-        return null;
+    /* ========== 自動加筆（初回保存のみ / 任意） ========== */
+    // 必要な場合は条件を拡張（例：本文が空 && original_description がある など）
+    public function maybe_auto_enhance_on_first_save($post_id, $post) {
+        if (wp_is_post_revision($post_id) || 'auto-draft' === $post->post_status) return;
+        // ここでは既定で何もしない（誤動作防止）。要件が固まったらONにしてください。
     }
 
-    private function callOpenAI($content)
-    {
-        $api_key = get_option('ace_openai_api_key');
-        if (empty($api_key)) {
-            return '';
+    /* ========== AJAX: 加筆 ========== */
+    public function ajax_enhance_content() {
+        $this->ensure_ajax_permissions();
+
+        $post_id = intval($_POST['post_id'] ?? 0);
+        $content = wp_kses_post($_POST['content'] ?? '');
+        if (!$post_id || $content === '') $this->json_error('Invalid request.');
+
+        // 変更前をバックアップ
+        $this->push_backup($post_id, $content);
+
+        $enhanced = $this->call_openai($content);
+        if ($enhanced === null) $this->json_error('AI request failed.');
+
+        wp_send_json_success(['enhanced' => $enhanced]);
+    }
+
+    /* ========== AJAX: バックアップ一覧 ========== */
+    public function ajax_list_backups() {
+        $this->ensure_ajax_permissions();
+        $post_id = intval($_POST['post_id'] ?? 0);
+        if (!$post_id) $this->json_error('Invalid post_id.');
+
+        $backups = get_post_meta($post_id, self::META_BACKUPS, true);
+        if (!is_array($backups)) $backups = [];
+
+        wp_send_json_success(['backups' => $backups]);
+    }
+
+    /* ========== AJAX: 復元 ========== */
+    public function ajax_restore_backup() {
+        $this->ensure_ajax_permissions();
+        $post_id = intval($_POST['post_id'] ?? 0);
+        $index   = intval($_POST['index']   ?? -1);
+
+        $backups = get_post_meta($post_id, self::META_BACKUPS, true);
+        if (!is_array($backups) || !isset($backups[$index])) $this->json_error('Invalid backup index.');
+
+        $content = (string)($backups[$index]['content'] ?? '');
+        if ($content === '') $this->json_error('Empty backup content.');
+
+        // 本文置換（DB更新はJS側で編集内容として反映させるため、ここではコンテンツ返却に留める手もある）
+        wp_send_json_success(['content' => $content]);
+    }
+
+    /* ========== 内部：バックアップ管理 ========== */
+    private function push_backup(int $post_id, string $content): void {
+        $max = max(1, intval(get_option(self::OPTION_MAX_BACKUPS, 5)));
+        $backups = get_post_meta($post_id, self::META_BACKUPS, true);
+        if (!is_array($backups)) $backups = [];
+
+        array_unshift($backups, [
+            'ts'      => time(),
+            'content' => $content
+        ]);
+        if (count($backups) > $max) $backups = array_slice($backups, 0, $max);
+
+        update_post_meta($post_id, self::META_BACKUPS, $backups);
+    }
+
+    /* ========== 内部：OpenAI 呼び出し ========== */
+    private function call_openai(string $content): ?string {
+        // 環境変数優先、なければオプション
+        $api_key = getenv('OPENAI_API_KEY');
+        if (!$api_key) $api_key = (string)get_option(self::OPTION_API_KEY, '');
+        if (!$api_key) {
+            $this->log('OPENAI_API_KEY missing.');
+            return null;
         }
 
-        $model = get_option('ace_openai_model', 'gpt-3.5-turbo');
-        $system_prompt = get_option('ace_system_prompt', 'You are a professional content writer and editor.');
-        $user_prompt_template = get_option('ace_user_prompt_template', 'Please enhance this content:\n\n{content}');
-        
-        $user_prompt = str_replace('{content}', $content, $user_prompt_template);
+        $model         = (string)get_option(self::OPTION_MODEL, 'gpt-4o-mini');
+        $system_prompt = (string)get_option(self::OPTION_SYSTEM_PROMPT, $this->default_system_prompt());
+        $user_template = (string)get_option(self::OPTION_USER_TEMPLATE, $this->default_user_template());
+        $user_message  = str_replace('{content}', $content, $user_template);
 
-        $response = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
-            'headers' => array(
-                'Authorization' => 'Bearer ' . $api_key,
-                'Content-Type' => 'application/json'
-            ),
-            'body' => wp_json_encode(array(
-                'model' => $model,
-                'messages' => array(
-                    array(
-                        'role' => 'system',
-                        'content' => $system_prompt
-                    ),
-                    array(
-                        'role' => 'user',
-                        'content' => $user_prompt
-                    )
-                ),
-                'temperature' => 0.7
-            )),
-            'timeout' => 60
-        ));
+        $endpoint = 'https://api.openai.com/v1/chat/completions';
+        $body = [
+            'model' => $model,
+            'messages' => [
+                ['role' => 'system', 'content' => $system_prompt],
+                ['role' => 'user',   'content' => $user_message],
+            ],
+            'temperature' => 0.5,
+            'max_tokens'  => 2048,
+        ];
+
+        $response = wp_remote_post($endpoint, [
+            'headers' => [
+                'Authorization' => 'Bearer '.$api_key,
+                'Content-Type'  => 'application/json',
+            ],
+            'timeout' => 60,
+            'body'    => wp_json_encode($body),
+        ]);
 
         if (is_wp_error($response)) {
-            error_log('OpenAI API Error: ' . $response->get_error_message());
-            return '';
+            $this->log('OpenAI error: '.$response->get_error_message());
+            return null;
         }
 
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
+        $code = wp_remote_retrieve_response_code($response);
+        $json = json_decode(wp_remote_retrieve_body($response), true);
 
-        if (isset($data['choices'][0]['message']['content'])) {
-            return $data['choices'][0]['message']['content'];
+        if ($code !== 200 || !is_array($json)) {
+            $this->log('OpenAI bad response: '.$code.' / '.substr(wp_remote_retrieve_body($response), 0, 500));
+            return null;
         }
 
-        error_log('OpenAI API Response: ' . $body);
-        return '';
+        $out = $json['choices'][0]['message']['content'] ?? '';
+        $out = is_string($out) ? trim($out) : '';
+        if ($out === '') return null;
+
+        return $out;
     }
 
-    public function activate()
-    {
-        if (!get_option('ace_openai_model')) {
-            add_option('ace_openai_model', 'gpt-3.5-turbo');
-        }
-        if (!get_option('ace_system_prompt')) {
-            add_option('ace_system_prompt', 'You are a professional content writer and editor. Help enhance the following content while maintaining its original meaning and style.');
-        }
-        if (!get_option('ace_user_prompt_template')) {
-            add_option('ace_user_prompt_template', 'Please enhance this content to make it more engaging, informative, and well-structured:\n\n{content}');
-        }
-        if (!get_option('ace_max_backups')) {
-            add_option('ace_max_backups', 5);
-        }
+    /* ========== 共通ユーティリティ ========== */
+    private function ensure_ajax_permissions(): void {
+        if (!current_user_can(self::CAPABILITY)) $this->json_error('Forbidden.', 403);
+
+        $nonce = $_POST['nonce'] ?? ($_POST['ace_nonce'] ?? ($_POST['ace_nonce_field'] ?? ''));
+        if (!wp_verify_nonce($nonce, self::NONCE_ACTION)) $this->json_error('Invalid nonce.', 403);
     }
 
-    public function deactivate()
-    {
-        // Cleanup if needed
+    private function json_error(string $message, int $code = 400): void {
+        wp_send_json_error(['message' => $message], $code);
+    }
+
+    private function log(string $msg): void {
+        if (defined('WP_DEBUG') && WP_DEBUG) error_log('[ACE] '.$msg);
     }
 }
 
-AIContentEnhancer::getInstance();
+new AI_Content_Enhancer();

@@ -1,267 +1,154 @@
-jQuery(document).ready(function($) {
-    'use strict';
-    
-    let currentBackups = [];
-    
-    function initializeEnhancer() {
-        createEnhancerControls();
-        bindEvents();
+jQuery(function ($) {
+  'use strict';
+
+  // Gutenberg/Classic の本文取得・設定
+  function getContent() {
+    try {
+      if (window.wp && wp.data && wp.data.select) {
+        const sel = wp.data.select('core/editor');
+        if (sel && sel.getEditedPostContent) return sel.getEditedPostContent() || '';
+      }
+      // Classic
+      if (window.tinymce && tinymce.get('content')) return tinymce.get('content').getContent() || '';
+      const ta = document.getElementById('content');
+      return ta ? ta.value : '';
+    } catch (e) { return ''; }
+  }
+
+  function setContent(html) {
+    try {
+      if (window.wp && wp.data && wp.data.dispatch) {
+        const disp = wp.data.dispatch('core/editor');
+        if (disp && disp.editPost) return disp.editPost({ content: html });
+      }
+      if (window.tinymce && tinymce.get('content')) return tinymce.get('content').setContent(html);
+      const ta = document.getElementById('content');
+      if (ta) ta.value = html;
+    } catch (e) {}
+  }
+
+  function getPostId() {
+    if (window.wp && wp.data && wp.data.select) {
+      const sel = wp.data.select('core/editor');
+      if (sel && sel.getCurrentPostId) return sel.getCurrentPostId();
     }
-    
-    function createEnhancerControls() {
-        const $titleWrap = $('#titlewrap');
-        if ($titleWrap.length === 0) return;
-        
-        const $controlsContainer = $('<div class="ace-controls"></div>');
-        
-        const $enhanceBtn = $('<button type="button" class="button button-primary ace-enhance-btn">')
-            .html('<span class="dashicons dashicons-admin-generic"></span> ' + aceAjax.strings.enhanceButton)
-            .attr('title', aceAjax.strings.confirmEnhance);
-            
-        const $backupsBtn = $('<button type="button" class="button ace-backups-btn">')
-            .html('<span class="dashicons dashicons-backup"></span> ' + aceAjax.strings.backupButton)
-            .attr('title', 'View content backups');
-        
-        $controlsContainer.append($enhanceBtn).append($backupsBtn);
-        $titleWrap.after($controlsContainer);
-        
-        createBackupsModal();
-        loadBackups();
-    }
-    
-    function createBackupsModal() {
-        const modalHtml = `
-            <div id="ace-backups-modal" class="ace-modal" style="display: none;">
-                <div class="ace-modal-content">
-                    <div class="ace-modal-header">
-                        <h3>${aceAjax.strings.backupButton}</h3>
-                        <span class="ace-modal-close">&times;</span>
-                    </div>
-                    <div class="ace-modal-body">
-                        <div id="ace-backups-list"></div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        $('body').append(modalHtml);
-    }
-    
-    function bindEvents() {
-        $(document).on('click', '.ace-enhance-btn', handleEnhanceClick);
-        $(document).on('click', '.ace-backups-btn', showBackupsModal);
-        $(document).on('click', '.ace-modal-close', hideBackupsModal);
-        $(document).on('click', '.ace-restore-btn', handleRestoreClick);
-        $(document).on('click', function(e) {
-            if ($(e.target).is('#ace-backups-modal')) {
-                hideBackupsModal();
+    const el = document.getElementById('post_ID');
+    return el ? parseInt(el.value, 10) : 0;
+  }
+
+  // モーダル（シンプル実装）
+  function openBackupsModal(list) {
+    const html = `
+      <div class="ace-modal" id="ace-backups-modal" role="dialog" aria-modal="true">
+        <div class="ace-modal__dialog">
+          <div class="ace-modal__header">
+            <h2>📝 ${aceAjax.strings.backups}</h2>
+            <button type="button" class="button-link ace-modal__close" aria-label="${aceAjax.strings.close}">✕</button>
+          </div>
+          <div class="ace-modal__body">
+            ${list.length === 0
+              ? `<p>${aceAjax.strings.noBackups}</p>`
+              : `<ul class="ace-backup-list">
+                  ${list.map((b, i) => {
+                    const d = new Date((b.ts || 0) * 1000);
+                    const label = isNaN(d.getTime()) ? `#${i}` : d.toLocaleString();
+                    return `<li>
+                      <div><strong>${label}</strong></div>
+                      <div class="ace-backup-actions">
+                        <button type="button" class="button ace-restore" data-index="${i}">↩️ ${aceAjax.strings.restore}</button>
+                      </div>
+                    </li>`
+                  }).join('')}
+                 </ul>`
             }
-        });
+          </div>
+        </div>
+      </div>`;
+    $('body').append(html);
+  }
+
+  function closeBackupsModal() {
+    $('#ace-backups-modal').remove();
+  }
+
+  // クリックハンドラ
+  $(document).on('click', '#ace-enhance-btn', function () {
+    const $btn = $(this);
+    const postId = getPostId();
+    const content = getContent();
+
+    if (!postId || !content) {
+      alert(aceAjax.strings.error + ' (empty post/content)');
+      return;
     }
-    
-    function handleEnhanceClick(e) {
-        e.preventDefault();
-        
-        if (!confirm(aceAjax.strings.confirmEnhance)) {
-            return;
-        }
-        
-        const $btn = $(this);
-        const content = getCurrentContent();
-        
-        if (!content.trim()) {
-            alert(aceAjax.strings.noContent);
-            return;
-        }
-        
-        const postId = $('#post_ID').val() || 0;
-        
-        $btn.prop('disabled', true)
-            .html('<span class="dashicons dashicons-update ace-spinning"></span> ' + aceAjax.strings.enhancing);
-        
-        $.post(aceAjax.ajaxUrl, {
-            action: 'ace_enhance_content',
-            content: content,
-            post_id: postId,
-            nonce: aceAjax.nonce
-        })
-        .done(function(response) {
-            if (response.success) {
-                setCurrentContent(response.data);
-                showNotice(aceAjax.strings.success, 'success');
-                loadBackups(); // Refresh backups list
-            } else {
-                const errorMsg = response.data || aceAjax.strings.error;
-                showNotice(errorMsg, 'error');
-                
-                if (errorMsg.includes('API key')) {
-                    showNotice(aceAjax.strings.noApiKey, 'error');
-                }
-            }
-        })
-        .fail(function() {
-            showNotice(aceAjax.strings.error, 'error');
-        })
-        .always(function() {
-            $btn.prop('disabled', false)
-                .html('<span class="dashicons dashicons-admin-generic"></span> ' + aceAjax.strings.enhanceButton);
-        });
+
+    $btn.prop('disabled', true).text(aceAjax.strings.enhancing);
+
+    $.post(aceAjax.ajaxUrl, {
+      action: 'ace_enhance_content',
+      nonce: aceAjax.nonce,
+      post_id: postId,
+      content
+    }).done(function (res) {
+      if (res && res.success && res.data && res.data.enhanced) {
+        setContent(res.data.enhanced);
+      } else {
+        alert(aceAjax.strings.error);
+      }
+    }).fail(function () {
+      alert(aceAjax.strings.error);
+    }).always(function () {
+      $btn.prop('disabled', false).text(aceAjax.strings.enhanceButton);
+    });
+  });
+
+  $(document).on('click', '#ace-backups-btn', function () {
+    const postId = getPostId();
+    if (!postId) {
+      alert(aceAjax.strings.error + ' (invalid post id)');
+      return;
     }
-    
-    function handleRestoreClick(e) {
-        e.preventDefault();
-        
-        if (!confirm(aceAjax.strings.confirmRestore)) {
-            return;
-        }
-        
-        const $btn = $(this);
-        const backupId = $btn.data('backup-id');
-        const postId = $('#post_ID').val() || 0;
-        
-        $btn.prop('disabled', true);
-        
-        $.post(aceAjax.ajaxUrl, {
-            action: 'ace_restore_content',
-            backup_id: backupId,
-            post_id: postId,
-            nonce: aceAjax.nonce
-        })
-        .done(function(response) {
-            if (response.success) {
-                setCurrentContent(response.data);
-                showNotice('Content restored successfully!', 'success');
-                hideBackupsModal();
-            } else {
-                showNotice('Failed to restore content', 'error');
-            }
-        })
-        .fail(function() {
-            showNotice('Failed to restore content', 'error');
-        })
-        .always(function() {
-            $btn.prop('disabled', false);
-        });
-    }
-    
-    function showBackupsModal() {
-        loadBackups();
-        $('#ace-backups-modal').show();
-    }
-    
-    function hideBackupsModal() {
-        $('#ace-backups-modal').hide();
-    }
-    
-    function loadBackups() {
-        const postId = $('#post_ID').val();
-        if (!postId) return;
-        
-        $.post(aceAjax.ajaxUrl, {
-            action: 'ace_get_backups',
-            post_id: postId,
-            nonce: aceAjax.nonce
-        })
-        .done(function(response) {
-            if (response.success) {
-                currentBackups = response.data;
-                renderBackupsList();
-                updateBackupsButton();
-            }
-        });
-    }
-    
-    function renderBackupsList() {
-        const $list = $('#ace-backups-list');
-        
-        if (currentBackups.length === 0) {
-            $list.html('<p>No backups available.</p>');
-            return;
-        }
-        
-        let html = '<div class="ace-backups-container">';
-        
-        currentBackups.forEach(function(backup, index) {
-            const date = new Date(backup.created_at).toLocaleString();
-            const preview = backup.content.substring(0, 150) + (backup.content.length > 150 ? '...' : '');
-            
-            html += `
-                <div class="ace-backup-item">
-                    <div class="ace-backup-header">
-                        <strong>Backup ${index + 1}</strong>
-                        <span class="ace-backup-date">${date}</span>
-                    </div>
-                    <div class="ace-backup-preview">${escapeHtml(preview)}</div>
-                    <div class="ace-backup-actions">
-                        <button type="button" class="button button-small ace-restore-btn" data-backup-id="${backup.id}">
-                            ${aceAjax.strings.restoreButton}
-                        </button>
-                    </div>
-                </div>
-            `;
-        });
-        
-        html += '</div>';
-        $list.html(html);
-    }
-    
-    function updateBackupsButton() {
-        const $btn = $('.ace-backups-btn');
-        const count = currentBackups.length;
-        
-        if (count > 0) {
-            $btn.html('<span class="dashicons dashicons-backup"></span> ' + aceAjax.strings.backupButton + ' (' + count + ')');
-        } else {
-            $btn.html('<span class="dashicons dashicons-backup"></span> ' + aceAjax.strings.backupButton);
-        }
-    }
-    
-    function getCurrentContent() {
-        if (typeof tinyMCE !== 'undefined' && tinyMCE.activeEditor && !tinyMCE.activeEditor.isHidden()) {
-            return tinyMCE.activeEditor.getContent();
-        } else {
-            return $('#content').val() || '';
-        }
-    }
-    
-    function setCurrentContent(content) {
-        if (typeof tinyMCE !== 'undefined' && tinyMCE.activeEditor && !tinyMCE.activeEditor.isHidden()) {
-            tinyMCE.activeEditor.setContent(content);
-        } else {
-            $('#content').val(content);
-        }
-    }
-    
-    function showNotice(message, type) {
-        const noticeClass = type === 'success' ? 'notice-success' : 'notice-error';
-        const $notice = $('<div class="notice ' + noticeClass + ' is-dismissible ace-notice"><p>' + message + '</p></div>');
-        
-        $('.wrap h1').first().after($notice);
-        
-        // Auto-dismiss after 5 seconds
-        setTimeout(function() {
-            $notice.fadeOut(function() {
-                $notice.remove();
-            });
-        }, 5000);
-        
-        // Make dismissible
-        $notice.on('click', '.notice-dismiss', function() {
-            $notice.remove();
-        });
-    }
-    
-    function escapeHtml(text) {
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return text.replace(/[&<>"']/g, function(m) { return map[m]; });
-    }
-    
-    // Initialize when DOM is ready
-    initializeEnhancer();
+    $.post(aceAjax.ajaxUrl, {
+      action: 'ace_list_backups',
+      nonce: aceAjax.nonce,
+      post_id: postId
+    }).done(function (res) {
+      const list = (res && res.success && res.data && Array.isArray(res.data.backups)) ? res.data.backups : [];
+      openBackupsModal(list);
+    }).fail(function () {
+      alert(aceAjax.strings.error);
+    });
+  });
+
+  // 復元ボタン
+  $(document).on('click', '.ace-restore', function () {
+    const postId = getPostId();
+    const index = parseInt($(this).data('index'), 10);
+    if (!postId || isNaN(index)) return;
+
+    if (!confirm(aceAjax.strings.confirmRestore)) return;
+
+    $.post(aceAjax.ajaxUrl, {
+      action: 'ace_restore_backup',
+      nonce: aceAjax.nonce,
+      post_id: postId,
+      index
+    }).done(function (res) {
+      if (res && res.success && res.data && res.data.content) {
+        setContent(res.data.content);
+      } else {
+        alert(aceAjax.strings.error);
+      }
+    }).fail(function () {
+      alert(aceAjax.strings.error);
+    });
+  });
+
+  // モーダル閉じる
+  $(document).on('click', '.ace-modal__close', function () {
+    closeBackupsModal();
+  });
+  $(document).on('click', '#ace-backups-modal', function (e) {
+    if (e.target && e.target.id === 'ace-backups-modal') closeBackupsModal();
+  });
 });
